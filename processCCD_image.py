@@ -2,7 +2,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
 import scipy.interpolate as intp
+from scipy import stats
 import robust
+import zipfile
 import os, pyfits, pdb
 
 class CCD:
@@ -14,14 +16,14 @@ class CCD:
             CCD.fname_BG        String path to background image
             CCD.exclude         2 element list. Only use columns >exclude[0] & <exclude[1] 
             CCD.raw_images      List of 2D arrays with raw CCD images
-            CCD.raw_backgrounds List of 2D arrays with background CCD images
+            CCD.raw_BGimages    List of 2D arrays with background CCD images
             CCD.images          List of 2D arrays with processed CCD images
-            CCD.backgrounds     List of 2D arrays with processed CCD backgrounds
-            CCD.specs           List of 1D RIXS spectra
-            CCD.BGspecs
-                                Each spectrum is [x, y] list of numpy arrays
-            CCD.raw_spectrum    Sum of all spectra [x [in pixels], y, e] list of numpy arrays
-            CCD.spectrum        Sum of all spectra [x [in energy], y, e] list of numpy arrays
+            CCD.BGimages        List of 2D arrays with processed CCD BGimages
+            CCD.specs           List of 1D RIXS spectra Each spectrum is [x, y] list of numpy arrays
+            CCD.BGspecs         List of 1D RIXS spectra ----------------------"---------------------
+            CCD.raw_spectrum    Sum of all specs [x [in pixels], y, e] list of numpy arrays
+            CCD.spectrum        Sum of all specs [x [in energy], y, e] list of numpy arrays
+            CCD.background      Sum of all BGspecs [x [in pixels], y, e] list of numpy arrays
             CCD.correlations    List of correlation functions
  
             CCD.photon_E        Energy of incident photons
@@ -43,14 +45,25 @@ class CCD:
                                 
     Processes:
     -----------            
-            CCD.clean()         remove background and values above threshold
+            CCD.clean()         reject cosmic rays above threshold
+            CCD.clean_std()     reject cosmic rays depending on deviation 
+                                for mean values in row trajectory
+            CCD.sub_backgrounds() subtract BGimages from images
             CCD.plot()          plot CCD image
             CCD.get_curvature() determine curvature
             CCD.get_specs()     bin CCD images into 1D using current curvature
+            CCD.get_BGspecs()   bin CCD BGimages into 1D using current curvature
             CCD.correlate()     Shift the pixel/E values overlapp all subsequent 
                                 spectra with the first spectrum
-            CCD.sum_specs()     sum 1D spectra together into CCD.spectrum
-            CCD._gendark        get or generate the dark image
+            CCD.sum_specs()     sum 1D specs together into CCD.spectrum ...
+                                and sum 1D BGspecs togetehr into CCD.specground
+            CCD.bin_points()    Bin points together
+    
+    Internal Processes:
+    -------------------
+            CCD._gendark        Generate the dark image when none is specified
+            CCD._clean_std      get image array with cosmic rays removed 
+                                based on deviation from mean
     """ 
 
     def __init__(self, fname_list=[], photon_E=930., poly_order=3, binpix=8, fileout='test.dat', fname_list_BG =[], exclude=[None, None]):
@@ -86,25 +99,26 @@ class CCD:
 
         if len(fname_list_BG) == 1:
             fname_list_BG = fname_list_BG * len(fname_list)
-        self.raw_backgrounds = []
+        self.raw_BGimages = []
         for fname_BG in fname_list_BG:
             if fname_BG[-4:] == 'fits':
                 fitsobj = pyfits.open(fname_BG)
                 M = fitsobj[2].data
             else:
                 try:
-                    self.raw_backgrounds.append(plt.imread(fname_BG + '.tif'))
+                    self.raw_BGimages.append(plt.imread(fname_BG + '.tif'))
                 except IOError:
                     z = zipfile.ZipFile(fname_BG + '.zip')
                     z.extract(z.namelist()[0], path=os.path.dirname(fname_BG))
-                    self.raw_backgrounds.append(plt.imread(fname_BG + '.tif'))
+                    self.raw_BGimages.append(plt.imread(fname_BG + '.tif'))
                     zout = zipfile.ZipFile(fname_BG + '.zip', "w")
                     zout.close()
-            self.raw_backgrounds.append(M)
+            self.raw_BGimages.append(M)
        
-        if self.raw_backgrounds == []:
+        if self.raw_BGimages == []:
             for M in self.raw_images:
-                self.raw_backgrounds.append(self._gen_dark(M))
+                print "Generating the dark images"
+                self.raw_BGimages.append(self._gen_dark(M))
         
 ################ PROCESSES FOR DATA ##################
    
@@ -118,21 +132,52 @@ class CCD:
         for image in self.raw_images:
             e_per_ph = self.photon_E /  3.65
             image = image / e_per_ph;
+            clean_image = np.copy(image)
             meanimage = np.mean(image[image < thHIGH])
-            image[image > thHIGH] = meanimage
-            self.images.append(image)
-        
-        self.backgrounds = []
-        for background in self.raw_backgrounds:
+            clean_image[clean_image > thHIGH] = meanimage
+            self.images.append(clean_image)
+            
+            changed_pixels = np.sum(image != clean_image) / ( len(image.flat)  + 0.0) # force float
+            print "Image: {0} % of pixels rejected".format(changed_pixels*100)
+     
+        self.BGimages = []
+        for BGimage in self.raw_BGimages:
             e_per_ph = self.photon_E /  3.65
-            background = background / e_per_ph;
-            meanbackground = np.mean(background[background < thHIGH])
-            background[background > thHIGH] = meanbackground
-            self.backgrounds.append(background)
+            BGimage = BGimage / e_per_ph
+            clean_BGimage = np.copy(BGimage)
+            meanBGimage = np.mean(BGimage[BGimage < thHIGH])
+            clean_BGimage[clean_BGimage > thHIGH] = meanBGimage
+            self.BGimages.append(clean_BGimage)
+
+            changed_pixels = np.sum(BGimage != clean_BGimage) / ( len(BGimage.flat)  + 0.0) # force float
+            print "Background: {0} % of pixels rejected".format(changed_pixels*100)
     
+    def clean_std(self, noise):
+        self.images = []
+        for image in self.raw_images:
+            clean_image = self._clean_std(image, noise)
+            e_per_ph = self.photon_E /  3.65
+            clean_image = clean_image / e_per_ph;
+            self.images.append(clean_image)
+            
+            changed_pixels = np.sum(image != clean_image) / ( len(image.flat)  + 0.0) # force float
+            print "Image: {0} % of pixels rejected".format(changed_pixels*100)
+
+        
+        self.BGimages = []
+        for BGimage in self.raw_BGimages:
+            clean_BGimage = self._clean_std(BGimage, noise)
+            e_per_ph = self.photon_E /  3.65
+            clean_BGimage = clean_BGimage / e_per_ph;
+            self.BGimages.append(clean_BGimage)
+            
+            changed_pixels = np.sum(BGimage != clean_BGimage) / ( len(BGimage.flat)  + 0.0) # force float
+            print "Background: {0} % of pixels rejected".format(changed_pixels*100)
+
+
     def sub_backgrounds(self):
         for i in range(len(self.images)):
-            self.images[i] = self.images[i] - self.backgrounds[i]
+            self.images[i] = self.images[i] - self.BGimages[i]
 
     def get_curvature(self, index=0):
         """ Determine the curvature of the CCD image specified by index
@@ -156,11 +201,9 @@ class CCD:
             curr = np.sum(M[:,indices], axis=1)
             ycorr = np.correlate(curr, ref, mode='same')
             M_corr[:,i] = ycorr
-            #print ycorr
             peaks.append(np.argmax(ycorr))
         
         peaks = np.array(peaks) + 0.0
-        print peaks
         # exclude values        
         peaks = peaks[keep]
         
@@ -172,7 +215,7 @@ class CCD:
         
     def offset_curvature(self, offset='Find Peak'):
         """ The constant in the curvature defined in self.curvature and self.curvature_info
-        is abitrary.  This offsets it. If no argument is given the offset is set to the
+        is abitrary.  This offsets it for convenient plotting. If no argument is given the offset is set to the
         peak in the spectrum"""
         if offset=='Find Peak':
             currentOffset = np.polyval(self.curvature, self.info_x[0])
@@ -187,30 +230,31 @@ class CCD:
 
     def get_specs(self):
         """ Extract the spectra using the predefined curvature"""
-        x = np.arange(np.shape(self.images[0])[0])
+        # Generate specs from images
+        y = np.arange(np.shape(self.images[0])[0])  # a column
         p = np.hstack((self.curvature[:-1], 0))
                 
         self.specs = []
         M_shifted = np.zeros(np.shape(self.images[0]))  # will be filled with image with columns shifted to cancel the curvature
         for image in self.images:
             for col in range(np.shape(image)[1]):
-                M_shifted[:, col] = np.interp(x, x - np.polyval(p, col), image[:, col],
+                M_shifted[:, col] = np.interp(y, y - np.polyval(p, col), image[:, col],
                                            left=np.NaN, right=np.NaN)
-            y = np.sum(M_shifted[:,self.exclude[0]:self.exclude[1]], axis=1)
-            inds = ~np.logical_or(np.isnan(x), np.isnan(y))
-            self.specs.append([x.transpose()[inds], y.transpose()[inds]])
+            I = np.sum(M_shifted[:,self.exclude[0]:self.exclude[1]], axis=1)
+            inds = ~np.logical_or(np.isnan(I), np.isnan(I))
+            self.specs.append([y.transpose()[inds], I.transpose()[inds]])
   
         self.info_shifted = M_shifted
     
-    def get_BGspecs(self):
-        x = np.arange(np.shape(self.backgrounds[0])[0])
+        # Generate BGspecs from background images
+        x = np.arange(np.shape(self.BGimages[0])[0])
         p = np.hstack((self.curvature[:-1], 0))
         
         self.BGspecs = []
-        M_shifted = np.zeros(np.shape(self.backgrounds[0]))  # will be filled with image with columns shifted to cancel the curvature
-        for background in self.backgrounds:
-            for col in range(np.shape(background)[1]):
-                M_shifted[:, col] = np.interp(x, x - np.polyval(p, col), background[:, col],
+        M_shifted = np.zeros(np.shape(self.BGimages[0]))  # will be filled with image with columns shifted to cancel the curvature
+        for BGimage in self.BGimages:
+            for col in range(np.shape(BGimage)[1]):
+                M_shifted[:, col] = np.interp(x, x - np.polyval(p, col), BGimage[:, col],
                                            left=np.NaN, right=np.NaN)
             y = np.sum(M_shifted[:,self.exclude[0]:self.exclude[1]], axis=1)
             inds = ~np.logical_or(np.isnan(x), np.isnan(y))
@@ -240,8 +284,9 @@ class CCD:
             self.shifts.append(shift)
 
     def sum_specs(self):
-        """ Sum the specs into one spectrum.
+        """ Sum the specs into one spectrum. And the bgspecs into background
         Calculating error from standard deviation"""
+        # specs
         x = self.specs[0][0]
         if len(self.specs) == 1:
             y = self.specs[0][1]
@@ -257,17 +302,50 @@ class CCD:
         
         inds = ~np.logical_or(np.isnan(x), np.isnan(y), np.isnan(e)),        
         self.spectrum = [x[inds], y[inds], e[inds]]
+        
+        # BGspecs
+        x = self.BGspecs[0][0]
+        if len(self.BGspecs) == 1:
+            y = self.BGspecs[0][1]
+            e = y*0.0
+        else:
+            YY = self.BGspecs[0][1]
+            for i in range(1, len(self.BGspecs)):
+                funcy = intp.interp1d(self.BGspecs[i][0], self.BGspecs[i][1], kind='linear', 
+                            bounds_error=False, fill_value=np.NaN)
+                YY = np.column_stack((YY, funcy(x)))
+            y = np.sum(YY, axis=1)
+            e = np.std(YY, axis=1)
+        
+        inds = ~np.logical_or(np.isnan(x), np.isnan(y), np.isnan(e)),        
+        self.background = [x[inds], y[inds], e[inds]]
+
+    def bin_points(self, dx, statistic = 'mean'):
+        """ Bin points together in intervals of dx
+        """
+        binedges = np.arange(-dx/2 + np.min(self.spectrum[0]),
+                             np.max(self.spectrum[0]) +dx/2 , dx)
+        xnew = (binedges[1:] + binedges[0:-1])/2
+        ynew, _, _ = stats.binned_statistic(self.spectrum[0], self.spectrum[1],
+                                            statistic=statistic, bins=binedges)
+        def quadrature_func(x):
+            return np.sqrt(np.sum(x**2)) / len(x)
+        enew, _, _ = stats.binned_statistic(self.spectrum[0], self.spectrum[2], 
+                                            statistic=quadrature_func, bins=binedges)
+        self.spectrum = [xnew, ynew, enew]       
 
     def calibrate(self, elastic_pixel, E_per_pix):
         """ Convert the spectrum into energy by specifying the elastic pixel and
         energy perpixel"""
         self.spectrum[0] = (elastic_pixel - self.spectrum[0]) *  E_per_pix
+        self.background[0] = (elastic_pixel - self.background[0]) *  E_per_pix
 
-    def calibrate_poly(self, elastic_pixel, p):
-        """ Convert the spectrum into energy by specifying the elastic pixel and
-        energy perpixel"""
-        self.spectrum[0] = (elastic_pixel - self.spectrum[0]) *  E_per_pix 
-        self.spectrum[0] = np.polyv
+#    def calibrate_poly(self, elastic_pixel, p):
+#        """ Convert the spectrum into energy by specifying the elastic pixel and
+#        energy perpixel"""
+#        self.spectrum[0] = (elastic_pixel - self.spectrum[0]) *  E_per_pix 
+#        self.spectrum[0] = np.polyv
+
 ###################### OUTPUTTING DATA #####################
 
     def write_file(self):
@@ -290,21 +368,39 @@ class CCD:
         """ Plot the peaks in the correlation function and the fit defining the 
         curvature
         """
-        #x = self.curvature_info[0]
         plt.plot(self.info_x, self.info_peaks, 'b.')
         hoizPixels = np.shape(self.images[0])[1]
         rowofCCD = np.arange(hoizPixels)
         plt.plot(rowofCCD, np.polyval(self.curvature, rowofCCD), 'r-')
     
-    def plot_image(self, index = 0, **kwargs):
+    def plot_image(self, index = 0, percentlow=1, percenthigh=99, **kwargs):
         """ Plot the specified CCD image, as chosen via index.
-        **kwargs are passed to plt.imshow"""
-        plt.imshow(self.images[index], vmin=np.percentile(self.images[index],1),
-               vmax=np.percentile(self.images[index], 99.999), cmap=plt.cm.Greys_r, aspect='auto', interpolation='none')
+        **kwargs are passed to plt.imshow
+        intensity limits are set as percentages unless vmin or vmax are passed as kwargs"""
+        if ('vmin' or 'vmax') in kwargs.keys():
+            plt.imshow(self.images[index], cmap=plt.cm.Greys_r, 
+                       aspect='auto', interpolation='none', **kwargs)
+        else:    
+            plt.imshow(self.images[index], vmin=np.percentile(self.images[index],percentlow),
+                   vmax=np.percentile(self.images[index], percenthigh),
+                    cmap=plt.cm.Greys_r, aspect='auto', interpolation='none', **kwargs)
+        plt.colorbar()
+        
+    def plot_raw_image(self, index = 0, percentlow=1, percenthigh=99, **kwargs):
+        """ Plot the specified raw CCD image, as chosen via index.
+        **kwargs are passed to plt.imshow
+        intensity limits are set as percentages unless vmin or vmax are passed as kwargs"""
+        if ('vmin' or 'vmax') in kwargs.keys():
+            plt.imshow(self.raw_images[index], cmap=plt.cm.Greys_r, 
+                       aspect='auto', interpolation='none', **kwargs)
+        else:    
+            plt.imshow(self.raw_images[index], vmin=np.percentile(self.raw_images[index],percentlow),
+                   vmax=np.percentile(self.raw_images[index], percenthigh),
+                    cmap=plt.cm.Greys_r, aspect='auto', interpolation='none', **kwargs)
         plt.colorbar()
     
     def plot_hist(self, index=0, bins=10, **kwargs):
-        """ Plot histrogram specified CCD image, as chosed via index
+        """ Plot histrogram of specified CCD image, as chosed via index
         bins = the number of bins to be used this function can be used to 
         examine the statistics of the spectrum. **kwargs are pass to plt.hist"""
         plt.hist(self.images[index].ravel(), bins=bins, log=True, **kwargs)
@@ -319,7 +415,7 @@ class CCD:
         else:
             plt.plot(self.specs[index][0], self.specs[index][1], '.-', **kwargs)
 
-    def plot_backgrounds(self, index=[], **kwargs):
+    def plot_BGimages(self, index=[], **kwargs):
         """ Plot all spectra. **kwargs are passed to plt.plot"""
         if index==[]:
             for BGspec in self.BGspecs:
@@ -332,8 +428,55 @@ class CCD:
         plt.errorbar(self.spectrum[0], self.spectrum[1]+ offset,
                      self.spectrum[2], fmt='.-', **kwargs)
 
-################ INTERNATL PROCESSES ##########
+################ INTERNAL PROCESSES ##########
     def _gen_dark(self, M):
         """ Generate image for background subtraction without real dark image
         """
         return M*0 + np.percentile(M[200:500,:], 50)
+     
+    def _clean_std(self, M, noise):
+        """ Clean cosmic rays based on horizontal, curvature corrected, rows.
+        For each row values < or > than mean -+ (noise*std) are rejected"""
+        p = self.curvature[:-1] + [0.]
+        y = y = np.arange(M.shape[0]) # a column 
+        
+        # Create curvature corrected array
+        M_shifted = np.zeros(np.shape(M)) 
+        for col in range(np.shape(M_shifted)[1]):
+            shift = np.round(np.polyval(p, col))
+            interpfunc = sp.interpolate.interp1d(y - shift, M[:, col], kind='nearest', bounds_error=False, fill_value=np.inf) # inf will be removed by threshold
+            M_shifted[:, col] = interpfunc(y)
+        
+        # Apply thresholding 
+        M_shifted_cleaned = np.zeros(np.shape(M))
+        for row_ind in range(np.shape(M_shifted_cleaned)[0]):
+            row = np.copy(M_shifted[row_ind, :])
+            
+            excluded_row = np.copy(row[self.exclude[0]:self.exclude[1]])
+            mean = np.mean(excluded_row[np.isfinite(excluded_row)])
+            std = np.std(excluded_row[np.isfinite(excluded_row)])
+            
+            print " Improve handing of NaNs"
+            indlow = row < (mean - noise*std)
+            indhigh = row > (mean + noise*std)
+            row[indlow] = mean
+            row[indhigh] = mean
+            row[np.isnan(row)] = mean
+            M_shifted_cleaned[row_ind, :] = row
+        
+        # Undo curvature correction
+        M_cleaned = np.zeros(np.shape(M)) 
+        for col in range(np.shape(M_cleaned)[1]):
+            shift = np.round(np.polyval(p, col))
+            interpfunc = sp.interpolate.interp1d(y + shift, M_shifted_cleaned[:, col],
+                                                 kind='nearest', bounds_error=False, fill_value=np.NaN)                           
+            M_cleaned[:, col] = interpfunc(y)
+        
+        # Use original pixels where row is cut due to curvature
+        inds = np.isnan(M_cleaned)
+        M_cleaned[inds] = M[inds]
+    
+        changed_pixels = np.sum(M != M_cleaned) / ( len(M.flat)  + 0.0) # force float
+        print "{0} % of pixels rejected".format(changed_pixels*100)
+        
+        return M_cleaned

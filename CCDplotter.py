@@ -8,27 +8,31 @@ from matplotlib.backends.backend_wxagg import FigureCanvasWxAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 
+from processCCD_image import *
+
 # Add display box showing header of file?
 
 #correct zoom using rubbish/rectange_select.py code
 #self.axes.remove_patch(self.rect)
 #somehow remove patch?
 
+print "need to fix bug with sliding into end of range"
+
 class ControlFrame(wx.Frame):
     def __init__(self):
         wx.Frame.__init__(self, None, title='File Browser', size=(400, 500), pos=(50, 50))
 
         panel = wx.Panel(self, -1)
-        
-        vbox = wx.BoxSizer(wx.VERTICAL)
+        self.panel = panel
         bdr_sz = 10 # was 20
         
         # path TextCtrl
+        vbox = wx.BoxSizer(wx.VERTICAL)
         vbox.AddSpacer(bdr_sz)
         path_cap = wx.StaticText( panel, label='Search Term' )
         vbox.Add(path_cap, 0, wx.LEFT | wx.RIGHT | wx.ALIGN_LEFT, border=bdr_sz)
         self.path = wx.TextCtrl(panel, size=(140, 20), value = 
-                      '/Users/mdean/Dropbox/ALS_feb_2015/La2NiO4_728/*.txt',
+                      '/Users/mdean/Dropbox/ALS_feb_2015/data/2015 02 06/CCD Scan 2586/*.fits',
                       style=wx.TE_PROCESS_ENTER)
         self.path.Bind(wx.EVT_TEXT_ENTER, self.updatepath)
         vbox.Add(self.path, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, border=bdr_sz)
@@ -36,39 +40,43 @@ class ControlFrame(wx.Frame):
         
         # LIST BOX SHOWING FILES
         self.path_list, self.file_list = self.get_files(self.path.GetValue())
-
         listbox_cap = wx.StaticText( panel, label='Directory contents' )
         vbox.Add(listbox_cap, 0, wx.LEFT | wx.RIGHT | wx.ALIGN_LEFT, border=bdr_sz)
-        self.listbox = wx.ListBox(panel, -1, wx.DefaultPosition, (170, 130), self.file_list, wx.LB_MULTIPLE)
+        self.listbox = wx.ListBox(panel, -1, wx.DefaultPosition, (170, 130), self.file_list, wx.LB_SINGLE)
+        self.listbox.Bind(wx.EVT_LISTBOX, self.plotit)   # -- new binding!
         
-        
-        # buttons
-        vbox.Add(self.listbox, 1, wx.EXPAND | wx.LEFT |wx.RIGHT | wx.BOTTOM, border=bdr_sz)
+        # buttons        
+        vbox.Add(self.listbox, 1, wx.EXPAND | wx.LEFT |wx.RIGHT | wx.BOTTOM, border=bdr_sz)        
         buttonsize=(80, 20)
         hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.plot_but = wx.Button(panel, -1, 'Plot', size=buttonsize)
-        self.Bind(wx.EVT_BUTTON, self.plotit, self.plot_but)
-        hbox.Add(self.plot_but, 0, wx.ALIGN_LEFT, border=bdr_sz)
-        hbox.AddSpacer(bdr_sz)
-        
-        self.clear_but = wx.Button(panel, -1, 'Clear', size=buttonsize)
-        self.Bind(wx.EVT_BUTTON, self.clearit, self.clear_but)
-        hbox.Add(self.clear_but, 0, wx.ALIGN_LEFT, border=bdr_sz)
-        hbox.AddSpacer(bdr_sz)
-        
+
         self.autoscale_but = wx.Button(panel, -1, 'Autoscale', size=buttonsize)
         self.Bind(wx.EVT_BUTTON, self.autoscaleit, self.autoscale_but)
         hbox.Add(self.autoscale_but, 0, wx.ALIGN_LEFT, border=bdr_sz)
-        hbox.AddSpacer(bdr_sz)       
 
-        self.legend_but = wx.Button(panel, -1, 'Legend', size=buttonsize)
-        self.Bind(wx.EVT_BUTTON, self.legendtoggleit, self.legend_but)
-        hbox.Add(self.legend_but, 0, wx.ALIGN_LEFT, border=bdr_sz)
+#        self.vmin_TextCtrl = wx.TextCtrl(panel, -1, 'Autoscale', size=buttonsize)
+#        self.Bind(wx.EVT_BUTTON, self.vminsetit, self.vmin_TextCtrl)
+#        hbox.Add(self.vmin_TextCtrl, 0, wx.ALIGN_LEFT, border=bdr_sz)
         
+        # sliders
         vbox.Add(hbox, 0, wx.LEFT | wx.RIGHT | wx.ALIGN_LEFT, border=bdr_sz)
         vbox.AddSpacer(bdr_sz)
+        hbox = wx.BoxSizer(wx.HORIZONTAL) # added!
+        self.vminslider = wx.Slider(panel, value=250, minValue=0, maxValue=500, 
+                                    style=wx.SL_TOP | wx.SL_AUTOTICKS | wx.SL_LABELS)
+        self.vminslider.SetTickFreq(50)
+        self.Bind(wx.EVT_SCROLL, self.vminslideit, self.vminslider)
+        hbox.Add(self.vminslider, 0, wx.LEFT | wx.RIGHT | wx.ALIGN_LEFT, border=bdr_sz)
+        hbox.AddSpacer(bdr_sz)  # new
         
-        self.legend_exists = False
+        self.vmaxslider = wx.Slider(panel, value=250, minValue=0, maxValue=500, 
+                                    style=wx.SL_TOP | wx.SL_AUTOTICKS | wx.SL_LABELS)
+        self.vmaxslider.SetTickFreq(50)
+        self.Bind(wx.EVT_SCROLL, self.vmaxslideit, self.vmaxslider)
+        hbox.Add(self.vmaxslider, 0, wx.LEFT | wx.RIGHT | wx.ALIGN_LEFT, border=bdr_sz)
+
+        vbox.Add(hbox, 0, wx.LEFT | wx.RIGHT | wx.ALIGN_LEFT, border=bdr_sz) # new
+        vbox.AddSpacer(bdr_sz)
         
         # Initiate everything
         panel.SetSizer(vbox)
@@ -78,55 +86,94 @@ class ControlFrame(wx.Frame):
         # Call plotframe        
         self.plotframe = PlotFrame(self)
         self.plotframe.Show()
-
+        self.vmin = None
+        self.vmax = None
+        
+    
+    # functions to bind to events
+    
     def updatepath(self, evt):
         print "update path"
         self.path_list, self.file_list = self.get_files(self.path.GetValue())
         self.listbox.Clear()
-        #self.listbox.InsertItems(self.file_list, 0)
         for filelist in self.file_list:
             self.listbox.Append(filelist)
-        #pdb.set_trace()
+    
+    def loadit(self):
+        filepath = self.path_list[self.listbox.GetSelection()]
+        self.CCD = CCD(fname_list=[filepath])
 
     def plotit(self, evt):
-        for index in self.listbox.GetSelections():
-            M = np.loadtxt(self.path_list[index])
-            filename = os.path.split(self.path_list[index])[1]
-            self.plotframe.figure.axes[0].plot(M[:,0],M[:,1], label=filename)
-        self.plotframe.figure.canvas.draw()
+        self.loadit()
+        #pdb.set_trace()
+        self.M = self.CCD.raw_images[0]
+        if (self.vmin == None) or (self.vmax == None):
+            self.vmin = np.percentile(self.M,1)
+            self.vmax = np.percentile(self.M,99)
+            vrange = np.abs(self.vmax - self.vmin)
+            self.vminslider.SetMin(self.vmin - 0.2 * vrange)
+            self.vmaxslider.SetMin(self.vmin - 0.2 * vrange)
+            self.vminslider.SetMax(self.vmax + 0.2 * vrange)
+            self.vmaxslider.SetMax(self.vmax + 0.2 * vrange)
         
-    def clearit(self, evt):
-        print "Clear button pressed"
-        self.plotframe.figure.axes[0].cla()
+        self.vminslider.SetValue(self.vmin)
+        self.vmaxslider.SetValue(self.vmax)
+        
+        self.plotframe.figure.clf()
+        self.axes = self.plotframe.figure.add_subplot(111) 
+        img = self.plotframe.figure.axes[0].imshow(self.M, vmin=self.vmin, vmax=self.vmax, aspect='auto', interpolation='none')            
+        self.colorbarobj = plt.colorbar(img, ax=self.plotframe.figure.axes[0])
         self.plotframe.figure.canvas.draw()
 
     def autoscaleit(self, evt):
         print "Autoscale pressed"
-        self.plotframe.figure.axes[0].autoscale(True)
-        self.plotframe.figure.canvas.draw()
+        try:
+            self.vmin = None
+            self.vmax = None
+            self.plotit(None)
+        except AttributeError:
+            "No image available"
+            pass
+    
+    def vminslideit(self, evt):
+        print "vmin slide"
+        self.vmin = self.vminslider.GetValue()
+        if self.vmin == self.vminslider.GetMin() or self.vmin == self.vminslider.GetMax():
+            print "request number"
+            dlg = wx.TextEntryDialog(self.panel, 'Enter value for minimum on colorbar',
+                                     "Colorbar Dialog", "",  style=wx.OK)
+            dlg.ShowModal()
+            #pdb.set_trace()
+            print dlg.GetValue()
+            if dlg.GetValue().isnumeric():
+                self.vmin = float(dlg.GetValue())
+                self.vminslider.SetMin(self.vmin - np.abs(self.xmin * 0.1) - 1)
+                self.vminslider.SetMax(self.vmin + - np.abs(self.vmin * 0.1) + 1)        
+            dlg.Destroy()
+        self.plotit(None)
 
-    def legendtoggleit(self, evt):
-        print "Legend pressed"
-        self.legendobj = self.plotframe.axes.legend(prop={'size':9})
-        if self.legend_exists:
-            self.legendobj.set_visible(False)
-            self.legend_exists = False
-        else:
-            self.legendobj.set_visible(True)
-            self.legend_exists = True
+    def vminsetit(self, evt):
+        print "vmin set"
+#        self.vmin = self.vminslider.GetValue()
+#        self.plotit(None)
 
-        self.plotframe.figure.canvas.draw()
-
-#        self.legendobj = self.plotframe.axes.legend()
-#        try:
-#            self.legendobj.set_visible(False)
-#        except AttributeError:
-#            self.legendobj = self.plotframe.axes.legend()
-        
-
-    def onselect(vmin, vmax):
-        print "onselect ran"
-        print vmin, vmax
+    def vmaxslideit(self, evt):
+        print "vmax slide"
+        self.vmax = self.vmaxslider.GetValue()
+        if self.vmax == self.vmaxslider.GetMin() or self.vmax == self.vmaxslider.GetMax():
+            #pdb.set_trace()
+            print "request number"
+            dlg = wx.TextEntryDialog(self.panel, 'Enter value for maximum on colorbar',
+                                     "Colorbar Dialog", "",  style=wx.OK)
+            dlg.ShowModal()
+            print dlg.GetValue()
+            if dlg.GetValue().isnumeric():
+                self.vmax = float(dlg.GetValue())
+                self.vmaxslider.SetMin(self.vmax - np.abs(self.vmax * 0.1) - 1)
+                self.vmaxslider.SetMax(self.vmax + - np.abs(self.vmax * 0.1) + 1)            
+            dlg.Destroy()
+        self.plotit(None)
+       
 
     def get_files(self, searchterm):
         path_list = glob.glob(searchterm)
@@ -146,7 +193,7 @@ class PlotFrame(wx.Frame):
         
         # initialize plot        
         self.figure = Figure()
-        self.axes = self.figure.add_subplot(111)        
+        self.axes = self.figure.add_subplot(111)         
         self.canvas = FigureCanvas(self, -1, self.figure)
         self.sizer = wx.BoxSizer(wx.VERTICAL)
         self.sizer.Add(self.canvas, 1, wx.LEFT | wx.TOP | wx.GROW)
@@ -167,7 +214,7 @@ class PlotFrame(wx.Frame):
         self.x1 = 0#None
         self.y1 = 0#None
         self.axes.add_patch(self.rect)
-        
+        print "shoudl add to axes[0]?"
         self.Fit()
         
     def _onPress(self, event):

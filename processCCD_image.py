@@ -128,10 +128,38 @@ class CCD:
         e.g. 0:500        
         and set values above thHIGH to 0
         """
+        
         self.images = []
         for image in self.raw_images:
+            clean_image = np.copy(image)
+            meanimage = np.mean(image[image < thHIGH])
+            clean_image[clean_image > thHIGH] = meanimage
+            self.images.append(clean_image)
+            
+            changed_pixels = np.sum(image != clean_image) / ( len(image.flat)  + 0.0) # force float
+            print "Image: {0} % of pixels rejected".format(changed_pixels*100)
+     
+        self.BGimages = []
+        for BGimage in self.raw_BGimages:
+            clean_BGimage = np.copy(BGimage)
+            meanBGimage = np.mean(BGimage[BGimage < thHIGH])
+            clean_BGimage[clean_BGimage > thHIGH] = meanBGimage
+            self.BGimages.append(clean_BGimage)
+
+            changed_pixels = np.sum(BGimage != clean_BGimage) / ( len(BGimage.flat)  + 0.0) # force float
+            print "Background: {0} % of pixels rejected".format(changed_pixels*100)
+
+    def clean_old(self, thHIGH):
+        """ Remove background and convert from electrons to photons 
+        gainregion  = indlow:indhigh defining energy gain rows on array
+        e.g. 0:500        
+        and set values above thHIGH to 0
+        """
+        
+        self.images = []
+        for image in self.raw_images:            
             e_per_ph = self.photon_E /  3.65
-            image = image / e_per_ph;
+            image = image / e_per_ph;  
             clean_image = np.copy(image)
             meanimage = np.mean(image[image < thHIGH])
             clean_image[clean_image > thHIGH] = meanimage
@@ -143,14 +171,14 @@ class CCD:
         self.BGimages = []
         for BGimage in self.raw_BGimages:
             e_per_ph = self.photon_E /  3.65
-            BGimage = BGimage / e_per_ph
+            BGimage = BGimage / e_per_ph;  
             clean_BGimage = np.copy(BGimage)
             meanBGimage = np.mean(BGimage[BGimage < thHIGH])
             clean_BGimage[clean_BGimage > thHIGH] = meanBGimage
             self.BGimages.append(clean_BGimage)
 
             changed_pixels = np.sum(BGimage != clean_BGimage) / ( len(BGimage.flat)  + 0.0) # force float
-            print "Background: {0} % of pixels rejected".format(changed_pixels*100)
+            print "Background: {0} % of pixels rejected".format(changed_pixels*100)                      
     
     def clean_std(self, noise):
         self.images = []
@@ -176,6 +204,11 @@ class CCD:
 
 
     def sub_backgrounds(self):
+        for i in range(len(self.images)):
+            e_per_ph = self.photon_E /  3.65
+            self.images[i] = (self.images[i] - self.BGimages[i])/e_per_ph
+            
+    def sub_backgrounds_old(self):
         for i in range(len(self.images)):
             self.images[i] = self.images[i] - self.BGimages[i]
 
@@ -415,13 +448,13 @@ class CCD:
         else:
             plt.plot(self.specs[index][0], self.specs[index][1], '.-', **kwargs)
 
-    def plot_BGimages(self, index=[], **kwargs):
+    def plot_BGimages(self, index=[], offset = 0.0, **kwargs):
         """ Plot all spectra. **kwargs are passed to plt.plot"""
         if index==[]:
             for BGspec in self.BGspecs:
-                plt.plot(BGspec[0], BGspec[1], '.-', **kwargs)
+                plt.plot(BGspec[0], BGspec[1] + offset, '.-', **kwargs)
         else:
-            plt.plot(self.BGspec[index][0], self.BGspec[index][1], '.-', **kwargs)
+            plt.plot(self.BGspecs[index][0], self.BGspecs[index][1] + offset, '.-', **kwargs)
 
     def plot_spectrum(self, offset=0.0, **kwargs):
         """ Plot the summed spectrum using errorbar"""

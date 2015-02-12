@@ -1,7 +1,8 @@
 from pylab import *
-import matplotlib.pyplot as plt
+from pyspec import fit, fitfuncs
 import numpy as np
 import scipy as sp
+import matplotlib.pyplot as plt
 import os, pdb, glob
 from processCCD_image import *
 
@@ -111,186 +112,12 @@ def get_a_background(ai_info, file_info):
     row_index = ai_info[:,3] == 0
     return  file_info[row_index, 0][0]# hacK?
 
-def process_all_old(day, scan_number, folder, base_name, epoints = [], 
-                bkg_method = [], offset = 100, lim = [1,9999], 
-                save_files = True, dx = -1, statistic = 'mean', toplot = []):
+def plot_3d(M, epoints, eloss, limits = [], xlim = [], ylim = [], 
+            title = '', save_fig = False, outname = '3dmap.png'):
     """
-    Process all files for the scan numbers provided.
-    Default options:
-    epoints - all energies in file.
-    
-    bkg_method - 'same file' = will look for the closest bkg scan in the same
-    file as the data scan.
-    
-
-    offset - offset in plotting the RIXS for each incident energy
-
-    lim - [1,9999] range in the detector to be used
-
-    save_files - If True it will save processed data into .txt files.
-
-    dx - range in energy loss to be binned, if negative no binning is done
-
-    statistic - method for binning, default is 'mean'
-
-    to_plot - plot only selected scans, the position in epoints has to be given,
-    not the energy.
+    Needs improvement!
     """
-    for w in range(len(scan_number)):
-        ai = 'data/' + day[w] + '/CCD Scan ' + scan_number[w] + '/' + base_name  + scan_number[w] + '-AI.txt'
-        
-        ai_info = loadtxt(ai, usecols = (0,1,3), skiprows = 10)  
-    
-        scan = np.zeros((len(ai_info[:,0]),1))
-        
-        scan[:] = w
-        
-        ai_info = np.hstack((ai_info,scan))
-    
-        if w == 0:    
-            setup = np.zeros((len(ai_info[:,0]), 4))
-            setup[:,:] = ai_info[:,:]
-        if w != 0:
-            setup = np.vstack((setup,ai_info))
-    
-    tmp_bkg = np.zeros((len(setup[:,0]),1))
-    
-    setup = np.hstack((setup,tmp_bkg))
-    
-    setup[:,[0,1]] = setup[:,[1,0]]
-    setup[:,[2,3]] = setup[:,[3,2]]
-    setup[:,[2,4]] = setup[:,[4,2]]
-    
-    dark_number = 0
-    for i in range(len(setup[:,0])):
-        if setup[i,3] == 0.0:
-            dark_number = dark_number + 1
-            
-    dark = np.zeros((dark_number,2))
-    for i in range(len(setup[:,0])):
-        if setup[i,3] == 0.0:
-            dark[dark_number-1,0] = setup[i,1]
-            dark[dark_number-1,1] = setup[i,4]
-            dark_number = dark_number - 1
-    
-    repeat = 0
-    k = 0
-    for i in range (len(setup[:,0])):
-        if setup[i,3] == 1.0 and repeat == 0: #finds repeat number and sets first bkg
-            k = i+1
-            repeat = 1
-            while k > 0 and k < len(setup[:,0]):
-                if np.abs(setup[i,0] - setup[k,0]) < 0.005:
-                    k = k + 1
-                    repeat = repeat + 1
-                else:
-                    k = -1
-    
-#    print repeat
-    
-    if len(bkg_method) == 0:
-        for w in range (len(scan_number[:])):
-            bkg_method.append('same file') #if no bkg method is given will use 'same file'                   
-                        
-    for w in range (len(bkg_method[:])):                    
-        if 'overall closest' == bkg_method[w]:
-            for i in range (len(setup[:,0])/repeat):
-                i = repeat*i
-                if setup[i,3] == 1.0 and setup[i,4] == w:
-                    diff = 9999        
-                    for j in range(len(setup[:,0])/repeat): #find closest bkg
-                        j = j*repeat
-                        if setup[j,3] == 0.0 and np.abs(i-j) < diff and np.abs(i-j) != 0:
-                            diff = i - j
-                    
-                    for j in range(repeat):
-                        setup[i+j,2] = i - diff + j
-        
-        if 'same file' == bkg_method[w]:
-            for i in range (len(setup[:,0])/repeat):
-                i = repeat*i
-                if setup[i,3] == 1.0 and setup[i,4] == w:
-                    diff = 9999        
-                    for j in range(len(setup[:,0])/repeat): #find closest bkg
-                        j = j*repeat
-                        if setup[j,3] == 0.0 and np.abs(i-j) < diff and np.abs(i-j) != 0 and setup[j,4] == setup[i,4]:
-                            diff = i - j
-                    
-                    for j in range(repeat):
-                        setup[i+j,2] = i - diff + j
-    
-    #print setup
-    
-    aux = np.empty((len(setup[:,0]),len(setup[0,:])))
-    aux[:,:] = setup[:,:]
-    
-    s = "i8"
-    for i in range(4):
-        s+=',i8'
-        
-    aux.view(s).sort(order=['f0'], axis=0)
-    
-    print 'Energy, Single scan file, Bkg position (in this list), Shutter, Data file'
-    print setup
-    
-    if len(epoints[:]) == 0:
-        epoints.append(aux[0,0])
-        for i in range(1,len(aux[:,0])):
-            if np.abs(aux[i,0] - aux[i-1,0]) > 0.005:
-                epoints.append(aux[i,0])
-    
-    
-#    print aux
-    #print len(epoints[:])
-    #print epoints
-#    print bkg_method
-    
-    for i in range (len(epoints[:])):
-        
-        fname_list = []
-        fname_list_BG = []
-        for j in range (len(setup[:,0])):
-            if setup[j,3] == 1.0 and np.abs(setup[j,0] - epoints[i]) < 0.005:
-                fname = 'data/' + day[int(setup[j,4])] + '/CCD Scan ' + scan_number[int(setup[j,4])] + '/' + base_name + scan_number[int(setup[j,4])] + '-' + '%05d' %(int(setup[j,1])) + '.fits'
-                fbkg = 'data/' + day[int(setup[int(setup[j,2]),4])] + '/CCD Scan ' + scan_number[int(setup[int(setup[j,2]),4])] + '/' + base_name + scan_number[int(setup[int(setup[j,2]),4])] + '-' + '%05d' %(setup[int(setup[j,2]),1]) + '.fits'
-                fname_list.append(fname)
-                fname_list_BG.append(fbkg)
-         
-    #    if i == 12 or i == 13:
-#        print fname_list
-#        print fname_list_BG
-            
-        ims = CCD(fname_list, photon_E=epoints[i], poly_order=2, binpix=2,
-                  fname_list_BG = fname_list_BG, exclude=lim)
-        ims.clean(70)
-        ims.sub_backgrounds()
-        ims.curvature = [ 1.63894559e-03 , -3.41817820e-01 ,  8.73668115e+02]
-        ims.get_specs()
-        ims.get_BGspecs()
-        ims.sum_specs()
-        ims.calibrate(873, 5.719e-3)
-        if dx <= 0.0:
-            dx = ims.spectrum[0][0]-ims.spectrum[0][1]
-        ims.bin_points(dx, statistic = statistic)
-        
-        if len(toplot[:]) == 0:
-            #ims.plot_specs()
-            ims.plot_backgrounds()
-            #ims.plot_spectrum(offset = i*offset)
-        else:
-            if i in toplot:
-                #ims.plot_specs()
-                ims.plot_backgrounds()
-                #ims.plot_spectrum(offset = i*offset)
-    #    plt.show()
-        if save_files is True:
-            fileout = folder + base_name + '%0.1lf' %(epoints[i]) + 'eV_calibrated.txt'
-            ims.fileout = fileout
-            ims.write_file()
-            print 'saved file: ' + fileout
 
-
-def plot_3d(M, epoints, eloss, limits = [], title = '', save_fig = False, outname = '3dmap.png'):
 
     plt.figure()
     if len(limits[:]) == 0:
@@ -307,36 +134,14 @@ def plot_3d(M, epoints, eloss, limits = [], title = '', save_fig = False, outnam
     #plt.colorbar()
     plt.xlabel('Incident Energy (eV)', fontsize=15)
     plt.ylabel('Energy Loss (eV)', fontsize=15)
-    #plt.xlim(-6,-1)
-    #plt.ylim(-1,5)
+    if len(xlim) != 0:    
+        plt.xlim(xlim[0],xlim[1])
+    if len(ylim) != 0:
+        plt.ylim(ylim[0], ylim[1])
     plt.title(title)
     if save_fig is True:
         plt.savefig(outname, format='png', dpi=1000)
     #plt.show()
-        
-def bin_plot_eloss(inname, outname, plot, statistic, bins, interval):
-    origdata = loadtxt(inname)
-
-    bindata = []
-    bindata = sp.stats.binned_statistic(origdata[:,0], origdata[:,1], statistic=statistic, bins=bins, range=interval)
-    
-    if plot is True:
-        plt.figure()
-        plt.plot(origdata[:,0], origdata[:,1], linewidth=2)
-        plt.plot(bindata[1][1:], bindata[0][:], linewidth=2)
-        plt.xlabel('Energy (eV)', fontsize=15)
-        plt.ylabel('Intensity', fontsize=15)
-        #plt.title(r'La$_2$NiO$_4$ on LSAO, #728, 10 fu, $\theta$ = 60$^{\circ}$')
-        #plt.savefig('La2NiO4_728/La2NiO4_728_xas.png', format='png', dpi=1000)
-        plt.show()
-    
-    newdata = np.zeros((len(bindata[0][:]),2))
-    
-    for i in range (len(bindata[0][:])):
-        newdata[i,0] = bindata[1][i+1]
-        newdata[i,1] = bindata[0][i]
-    
-    savetxt(outname, newdata[:,:])
     
 def calc_xas(infile, outfile, epoints, ewindow):
     
@@ -524,11 +329,12 @@ def get_epoints(setup, delta = 0.005):
             epoints.append(aux[i,0])
     
     return epoints
-    
+            
 def process_setup(setup, fname, epoints = [], offset = 100, save_files = True,
                     to_plot = [], plot = 0, lim = [1,9999], dx = -1, statistic = 'mean',
                     base_fileout = 'RIXS_data_', clean = 0, curvature = [],
-                    cal = []):
+                    cal = [], scan_time = 10, pol_corr = []):
+
     """
     Process images defined on setup. 
     
@@ -561,14 +367,18 @@ def process_setup(setup, fname, epoints = [], offset = 100, save_files = True,
     
     cal = [] - Parameters for pixel -> energy calibration    
     """
+    plt.figure()  
+    
     for i in range (len(epoints[:])):
         
         fname_list = []
         fname_list_BG = []
+        time_BG = []
         for j in range (len(setup[:,0])):
             if setup[j,3] == 1.0 and np.abs(setup[j,0] - epoints[i]) < 0.005:
                 fname_list.append(fname[j])
                 fname_list_BG.append(fname[int(setup[j,2])])
+                time_BG.append(scan_time*(setup[j,1]-1))
             
         ims = CCD(fname_list, photon_E=epoints[i], poly_order=2, binpix=2,
                   fname_list_BG = fname_list_BG, exclude=lim)
@@ -576,7 +386,20 @@ def process_setup(setup, fname, epoints = [], offset = 100, save_files = True,
         if len(curvature[:]) == 3:
             ims.curvature = curvature
                   
-        ims.clean(clean) #ims.clean_std(clean) ????
+        ims.clean(clean) #ims.clean_std(clean) ???? 
+        
+        if len(pol_corr) != 0:        
+            ims.get_specs()
+    
+            w = 0
+            for spec in ims.BGspecs:
+                sum_bkg = 0
+                for j in range (len(spec[1][:])):
+                    sum_bkg = sum_bkg + spec[1][j]
+                pol = pol_corr[0] + pol_corr[1]*time_BG[w] + pol_corr[2]*time_BG[w]**2
+                #print pol, sum_bkg
+                ims.BGimages[w] = ims.BGimages[w]*pol/sum_bkg
+                w = w + 1
             
         ims.sub_backgrounds()
         ims.get_specs()
@@ -611,3 +434,88 @@ def process_setup(setup, fname, epoints = [], offset = 100, save_files = True,
             ims.fileout = fileout
             ims.write_file()
             print 'saved file: ' + fileout
+            
+           
+            
+def fit_pol(x,p,mode='eval'):
+   if mode == 'eval':
+      out = p[0] + p[1]*x + p[2]*x**2
+   elif mode == 'params':
+      out = ['offset','first order', 'second order']
+   elif mode == 'name':
+      out = "Exponential"
+   elif mode == 'guess':
+      g = peakguess(x, p)
+      out = g[4:6]
+   else:
+      out = []
+   return out
+
+def calc_bkg_corr(setup,fname, scan_time = 10, lim = [1,9999], clean = 1E5,
+                  curvature = []):
+
+    sum_bkg = []
+    time = []
+    j = 0
+    for i in range (len(fname)):
+        
+        fname_list = []
+        fname_list_BG = []
+        if setup[i,3] == 0.0:
+            fname_list.append(fname[i])
+            
+            ims = CCD(fname_list, photon_E=70, poly_order=2, binpix=2,
+                      fname_list_BG = fname_list_BG, exclude=lim)
+            
+            if len(curvature[:]) == 3:
+                ims.curvature = curvature
+            
+            ims.clean(clean)
+            
+            ims.get_specs()
+            ims.sum_specs()
+            
+            sum_bkg.append(0.0)
+            time.append(scan_time*i*1.0)
+            for w in range (len(ims.spectrum[1])):
+                sum_bkg[j] = sum_bkg[j] + ims.spectrum[1][w]
+                
+            j = j + 1
+
+
+    err = []
+    err[:] = np.sqrt(sum_bkg[:])
+
+    M = np.zeros((len(time),3))
+    
+    M[:,0] = time[:]
+    M[:,1] = sum_bkg[:]
+    M[:,2] = err[:]    
+
+    funcs = [fit_pol]
+    
+    p0 = sum_bkg[0]
+    p1 = (sum_bkg[len(sum_bkg)-1] - sum_bkg[0])/(time[len(time)-1]-time[0])
+    p2 = -p1
+    
+    guess = array([p0,p1,p2])
+    
+    f = fit.fit(x= M[:,0], y=M[:,1], e = M[:,2], funcs=funcs, guess=guess, ifix= [0,0,0])  
+    f.go()
+    clf()
+    errorbar(f.datax, f.datay, f.datae, fmt='k.')
+    fx,fy = f.evalfitfunc(nxpts = 200)
+    plt.plot(fx, fy, 'r-')       
+    
+    plt.plot(M[:,0],M[:,1], 'bs')
+    plt.xlabel('Time')
+    plt.ylabel('Bkg')
+    time_lim = 0.1*np.abs(time[len(time)-1]-time[0])
+    bkg_lim = 0.1*(np.max(sum_bkg) - np.min(sum_bkg))
+    plt.xlim(time[0]-time_lim,time[len(time)-1]+time_lim)
+    plt.ylim(np.min(sum_bkg) - bkg_lim, np.max(sum_bkg) + bkg_lim)
+
+    return f.result          
+        
+        
+        

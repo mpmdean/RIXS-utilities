@@ -1,8 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
-import scipy.interpolate as intp
 from scipy import stats
+from scipy.optimize import curve_fit
+import scipy.interpolate as intp
 import robust
 import zipfile
 import os, pyfits, pdb
@@ -117,16 +118,15 @@ class CCD:
        
         if self.raw_BGimages == []:
             for M in self.raw_images:
-                print "Generating the dark images"
+                #print "Generating the dark images"
                 self.raw_BGimages.append(self._gen_dark(M))
         
 ################ PROCESSES FOR DATA ##################
    
     def clean(self, thHIGH):
-        """ Remove background and convert from electrons to photons 
+        """ Remove background.
         gainregion  = indlow:indhigh defining energy gain rows on array
-        e.g. 0:500        
-        and set values above thHIGH to 0
+        e.g. 0:500 and set values above thHIGH to 0
         """
         
         self.images = []
@@ -180,7 +180,37 @@ class CCD:
             changed_pixels = np.sum(BGimage != clean_BGimage) / ( len(BGimage.flat)  + 0.0) # force float
             print "Background: {0} % of pixels rejected".format(changed_pixels*100)                      
     
+    def clean_std_new(self, noise):
+        """
+        Removes background based on the average intensity at each energy loss
+        and its standard deviation. This process is iterated len(noise) times
+        as the presence of a large count in a pixel screws up the average and
+        standart deviation.
+        """
+        self.images = []
+        for image in self.raw_images:
+            clean_image = self._clean_std_new(image, noise)
+           
+            self.images.append(clean_image)
+            
+            changed_pixels = np.sum(image != clean_image) / ( len(image.flat)  + 0.0) # force float
+            #print "Image: {0} % of pixels rejected".format(changed_pixels*100)
+
+        
+        self.BGimages = []
+        for BGimage in self.raw_BGimages:
+            clean_BGimage = self._clean_std_new(BGimage, noise)
+
+            self.BGimages.append(clean_BGimage)
+            
+            changed_pixels = np.sum(BGimage != clean_BGimage) / ( len(BGimage.flat)  + 0.0) # force float
+            #print "Background: {0} % of pixels rejected".format(changed_pixels*100)    
+    
     def clean_std(self, noise):
+        """
+        Removes background based on the average intensity at each energy loss
+        and its standard deviation.
+        """
         self.images = []
         for image in self.raw_images:
             clean_image = self._clean_std(image, noise)
@@ -202,7 +232,7 @@ class CCD:
             changed_pixels = np.sum(BGimage != clean_BGimage) / ( len(BGimage.flat)  + 0.0) # force float
             print "Background: {0} % of pixels rejected".format(changed_pixels*100)
 
-
+    
     def sub_backgrounds(self):
         for i in range(len(self.images)):
             e_per_ph = self.photon_E /  3.65
@@ -257,7 +287,6 @@ class CCD:
         self.curvature[-1:] += offset
         self.info_peaks += offset
         print "Curvature was offst by %f" %offset
-
            
 ###################### BINNING AND SUMMING #################
 
@@ -379,6 +408,91 @@ class CCD:
 #        self.spectrum[0] = (elastic_pixel - self.spectrum[0]) *  E_per_pix 
 #        self.spectrum[0] = np.polyv
 
+    def shift_e(self, func = 'gauss'):
+        """ 
+        Shifts the energy loss spectra to align the elastic peak to the first
+        scan of self.specs. Outputs the position that all scans were aligned to
+        be an input for self.calibrate.
+        """
+        i = 0
+        for spec in self.specs:        
+
+            gmax = np.max(spec[1][:])
+            ind = int(spec[0][np.where(spec[1][:] == gmax)])
+            cnte = spec[1][ind-100]
+            
+            #print gmax, ind, cnte
+            
+            if func == 'gauss':
+                def gauss(x,a,x0,sigma):
+                    return a*np.exp(-(x-x0)**2/(2*sigma**2)) 
+    
+                popt,pcov = curve_fit(gauss,spec[0],spec[1],p0=[gmax,ind,1])
+                
+                #print popt
+                
+                #plt.plot(spec[0][:], spec[1][:], 'bs')
+                #plt.plot(spec[0][:], gauss(spec[0][:],popt[0],popt[1],popt[2]))
+                #plt.show()
+                #plt.figure()
+                
+                if i == 0:
+                    x_first = popt[1]
+                    
+                spec[0] = spec[0] + (x_first - popt[1])
+                self.specs[i] = spec
+                i = i+1
+                
+            if func == 'slit':
+                def slit(x,a,x0,k,w,cnte):
+                    y = np.empty((len(x)))
+                    y[:] = 0.0
+                    ind1 = np.abs(2*k*(x-x0+w/2)) > np.log(np.finfo(np.float64).max) #Looks for the maximum exponential that it can calculate!
+                    ind2 = np.abs(2*k*(x-x0-w/2)) > np.log(np.finfo(np.float64).max)
+                    index = -(ind1 + ind2)
+                    y[index] = a*(1/(1+np.exp(-2*k*(x[index]-x0+w/2)))-1/(1+np.exp(-2*k*(x[index]-x0-w/2)))) + cnte
+                    return y
+                
+                popt,pcov = curve_fit(slit,spec[0],spec[1],p0=[gmax,ind,1,10,cnte])
+                        
+                #print popt
+                
+                #plt.plot(spec[0][:], spec[1][:], 'bs')
+                #plt.plot(spec[0][:], slit(spec[0],popt[0],popt[1],popt[2],popt[3],popt[4]))
+                #plt.show()
+                #plt.figure()
+                
+                if i == 0:
+                    x_first = popt[1]
+                    
+                xlow = spec[0][0]
+                xhigh = spec[0][len(spec[0])-1]
+                    
+                xnew = spec[0] + (x_first - popt[1])
+                
+                f = intp.interp1d(xnew, spec[1], kind='linear', 
+                            bounds_error=False, fill_value=0.0)
+                
+                spec[1] = f(spec[0])
+                
+                """
+                ind = []
+                if (x_first - popt[1]) > 0:
+                    ind = np.abs(spec[0][:] - xnew[0]) < 0.6
+                    print np.where(ind is True)
+                    for j in range (len(spec[0])):
+                        if j < ind:
+                            spec[0][j] = 0
+                        else:
+                            spec[0][j] = xnew[j-ind]
+                """
+                #spec[0]= spec[0] + (x_first - popt[1])
+                self.specs[i] = spec
+                i = i+1
+        
+        return x_first
+                
+
 ###################### OUTPUTTING DATA #####################
 
     def write_file(self):
@@ -482,6 +596,7 @@ class CCD:
         
         # Apply thresholding 
         M_shifted_cleaned = np.zeros(np.shape(M))
+        
         for row_ind in range(np.shape(M_shifted_cleaned)[0]):
             row = np.copy(M_shifted[row_ind, :])
             
@@ -489,9 +604,10 @@ class CCD:
             mean = np.mean(excluded_row[np.isfinite(excluded_row)])
             std = np.std(excluded_row[np.isfinite(excluded_row)])
             
-            print " Improve handing of NaNs"
+           # print " Improve handing of NaNs"
             indlow = row < (mean - noise*std)
             indhigh = row > (mean + noise*std)
+           # print mean, std
             row[indlow] = mean
             row[indhigh] = mean
             row[np.isnan(row)] = mean
@@ -510,6 +626,64 @@ class CCD:
         M_cleaned[inds] = M[inds]
     
         changed_pixels = np.sum(M != M_cleaned) / ( len(M.flat)  + 0.0) # force float
-        print "{0} % of pixels rejected".format(changed_pixels*100)
+        #print "{0} % of pixels rejected".format(changed_pixels*100)
+        
+        return M_cleaned
+
+    def _clean_std_new(self, M, noise):
+        """ Clean cosmic rays based on horizontal, curvature corrected, rows.
+        The cleaning iterates len(noise) times to account for the influence of
+        the large cosmic rays count that inflates the mean. For each row values
+        < or > than mean -+ (noise*std) are rejected"""
+        
+        p = self.curvature[:-1] + [0.]
+        y = y = np.arange(M.shape[0]) # a column
+        mean = 0.0
+        
+        w = 0
+        # Create curvature corrected array
+        M_shifted = np.zeros(np.shape(M)) 
+        for col in range(np.shape(M_shifted)[1]):
+            shift = np.round(np.polyval(p, col))
+            interpfunc = sp.interpolate.interp1d(y - shift, M[:, col], kind='nearest', bounds_error=False, fill_value=np.inf) # inf will be removed by threshold
+            M_shifted[:, col] = interpfunc(y)
+        
+        # Apply thresholding 
+        M_shifted_cleaned = np.zeros(np.shape(M))
+        for row_ind in range(np.shape(M_shifted_cleaned)[0]):
+            row = np.copy(M_shifted[row_ind, :])
+            
+            for clean in noise:
+                excluded_row = np.copy(row[self.exclude[0]:self.exclude[1]]) 
+                
+                #If all excluded_row are not finite, then this row is equal to
+                #the previous mean. If it's the first row, then mean = 0.0
+                if all(test == False for test in np.isfinite(excluded_row)) == True: 
+                    row[:] = mean
+                else:
+                    mean = np.mean(excluded_row[np.isfinite(excluded_row)])
+                    std = np.std(excluded_row[np.isfinite(excluded_row)])
+                    indlow = row < (mean - clean*std)
+                    indhigh = row > (mean + clean*std)
+                    row[indlow] = mean
+                    row[indhigh] = mean
+                    row[np.isnan(row)] = mean
+                
+            M_shifted_cleaned[row_ind, :] = row
+            
+        # Undo curvature correction
+        M_cleaned = np.zeros(np.shape(M)) 
+        for col in range(np.shape(M_cleaned)[1]):
+            shift = np.round(np.polyval(p, col))
+            interpfunc = sp.interpolate.interp1d(y + shift, M_shifted_cleaned[:, col],
+                                                 kind='nearest', bounds_error=False, fill_value=np.NaN)                           
+            M_cleaned[:, col] = interpfunc(y)
+        
+        # Use original pixels where row is cut due to curvature
+        inds = np.isnan(M_cleaned)
+        M_cleaned[inds] = M[inds]
+    
+        changed_pixels = np.sum(M != M_cleaned) / ( len(M.flat)  + 0.0) # force float
+        #print "{0} % of pixels rejected".format(changed_pixels*100)
         
         return M_cleaned

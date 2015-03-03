@@ -5,6 +5,7 @@ import scipy as sp
 import matplotlib.pyplot as plt
 import os, pdb, glob
 from processCCD_image import *
+from datetime import datetime
 
 def get_frame_list(file_info, ai_info):
     """
@@ -115,9 +116,10 @@ def get_a_background(ai_info, file_info):
 def plot_3d(M, epoints, eloss, limits = [], xlim = [], ylim = [], 
             title = '', save_fig = False, outname = '3dmap.png'):
     """
-    Needs improvement!
+    Plots 3d incident energy x energy loss graph. M is a matrix with the data
+    as M[incident energy, energy loss]. epoints is the incident energies, and
+    eloss the energy loss.
     """
-
 
     plt.figure()
     if len(limits[:]) == 0:
@@ -131,7 +133,7 @@ def plot_3d(M, epoints, eloss, limits = [], xlim = [], ylim = [],
         z = np.linspace(limits[0],limits[1], 100, endpoint=True)
         fig = plt.contourf(epoints, eloss, M, z)
         plt.colorbar(ticks=tks)
-    #plt.colorbar()
+
     plt.xlabel('Incident Energy (eV)', fontsize=15)
     plt.ylabel('Energy Loss (eV)', fontsize=15)
     if len(xlim) != 0:    
@@ -141,9 +143,15 @@ def plot_3d(M, epoints, eloss, limits = [], xlim = [], ylim = [],
     plt.title(title)
     if save_fig is True:
         plt.savefig(outname, format='png', dpi=1000)
-    #plt.show()
     
-def calc_xas(infile, outfile, epoints, ewindow):
+def calc_xas(infile, ewindow):
+    """
+    Calculate the XAS from summing the RIXS data along eloss. "infile" contains
+    the path to the eloss x intensity scans for each incident energy. "ewindow"
+    (=[e0,ef]) sets the the limits of energy loss to be integrated (e0 to ef).
+    
+    INCLUDE ERROR CALCULATION!
+    """
     
     for i in range (len(infile[:])):
         
@@ -157,8 +165,51 @@ def calc_xas(infile, outfile, epoints, ewindow):
                 xas[i] = xas[i] + data[j,1]
         
     return xas
+    
+def calc_eloss(infile, energy, ewindow):
+    """
+    Calculate the incident energy x intensity for a specific energy loss. 
+    "infile" contains the path to the eloss x intensity scans for each incident 
+    energy. "energy" is the energy loss to be used, and "ewindow" sets the range
+    in energy loss to be binned. For a given incident energy, the energy loss
+    from "energy"-"ewindow to "energy"+"ewindow" is averaged.
+    """
+    
+    eloss = []
+    error = []
+    for j in range (len(infile)):
+        data = loadtxt(infile[j])
+        eloss.append(0.0)
+        error.append(0.0)
+        w = 0
+        for i in range(len(data)):
+            if np.abs(data[i,0]-energy) < ewindow:
+                eloss[j] = eloss[j] + data[i,1]
+                error[j] = error[j] + data[i,2]**2
+                w = w + 1
+        eloss[j] = eloss[j]/w + 0.0
+        error[j] = error[j]**0.5/w
+        
+    eloss = np.array(eloss)
+    error = np.array(error)
+        
+    return eloss, error
+                
 
 def build_setup(day, base_name, scan_number):
+    """
+    The CCD images are processed based on the "setup". This file contains
+    all scans for a given sample and temperature which should be the same (apart
+    from different incident energies). It consists of 5 colums:"incident energy",
+    "file number", "background position", "shutter status" (0-closed, 1-open), 
+    "scan order" (first in "scan_number" is 0).
+    
+    "day", "base_name" and "scan_number" are vectors with info about the scans.
+    IT ASSUMES THAT THE SCANS ARE SAVED IN: data/CCD Scan "scan_number"/, AND
+    THAT THEY HAVE THE SAME NAME FORMAT AS THEY ARE SAVED AT ALS.
+    
+    Outputs "setup" and "fname", the later has the path to all scans in "setup".
+    """
     
     for w in range(len(scan_number)):
         
@@ -215,7 +266,11 @@ def build_setup(day, base_name, scan_number):
     return setup, fname
     
 def set_setup(day, base_name, scan_number, filenos, e_inc, bkg = []):
-    
+    """
+    Similar to the "build_setup" (read the one above!). This is used to set
+    the "setup" using specific scans (in filenos). Besides "setup and "fname",
+    it exports "epoints" that have the incident energies.
+    """
     
     setup = np.zeros((len(filenos[:]),5))
     fname = []
@@ -247,34 +302,29 @@ def set_setup(day, base_name, scan_number, filenos, e_inc, bkg = []):
 
 def set_bkg(setup, bkg_method = []):
     """
+    Takes the "setup" and finds the closest background for every scan. It can
+    do it in bkg_method: overall_closest, and same_file. In the former, for each
+    scan, the closest background scan as displayed in "setup" will be assigned,
+    while in the later, the closest background within the same "scan_number" will
+    be assigned. A different bkg_method can be assigned for each "scan_number".
+    The "same_file" method is used by default.
+    
     THERE MUST BE AN EASIER WAY TO DO THIS!
     """
-    dark_number = 0
-    for i in range(len(setup[:,0])):
-        if setup[i,3] == 0.0:
-            dark_number = dark_number + 1
-            
-    dark = np.zeros((dark_number,2))
-    for i in range(len(setup[:,0])):
-        if setup[i,3] == 0.0:
-            dark[dark_number-1,0] = setup[i,1]
-            dark[dark_number-1,1] = setup[i,4]
-            dark_number = dark_number - 1
-    
     repeat = 0
     k = 0
     for i in range (len(setup[:,0])):
         if setup[i,3] == 1.0 and repeat == 0: #finds repeat number and sets first bkg
             k = i+1
             repeat = 1
-            while k > 0 and k < len(setup[:,0]):
+            while k > 0 and k < len(setup[:,0]) and setup[k,3] != 0.0:
                 if np.abs(setup[i,0] - setup[k,0]) < 0.005:
                     k = k + 1
                     repeat = repeat + 1
                 else:
                     k = -1
     
-#    print repeat
+    #print repeat
     num_scans = int(np.max(setup[:,4]) + 1)
     
     if len(bkg_method) == 0:
@@ -311,6 +361,10 @@ def set_bkg(setup, bkg_method = []):
     return setup
     
 def get_epoints(setup, delta = 0.005):
+    """
+    Collects all different incident energies for each scan, and return them into
+    "epoints". All energies within +- delta are taken to be the same.
+    """
     
     aux = np.empty((len(setup[:,0]),len(setup[0,:])))    
     
@@ -332,8 +386,8 @@ def get_epoints(setup, delta = 0.005):
             
 def process_setup(setup, fname, epoints = [], offset = 100, save_files = True,
                     to_plot = [], plot = 0, lim = [1,9999], dx = -1, statistic = 'mean',
-                    base_fileout = 'RIXS_data_', clean = 0, curvature = [],
-                    cal = [], scan_time = 10, pol_corr = []):
+                    base_fileout = 'RIXS_data_', clean = [], curvature = [],
+                    cal = [], cal_func = 'slit', scan_time = 10, pol_corr = []):
 
     """
     Process images defined on setup. 
@@ -365,29 +419,55 @@ def process_setup(setup, fname, epoints = [], offset = 100, save_files = True,
     
     curvature= [] - Parameters for curvature correction.
     
-    cal = [] - Parameters for pixel -> energy calibration    
+    cal = [] - Parameters for pixel -> energy calibration
+    
+    cal_func = 'slit' or 'gauss' - function to be fitted to the elastic peak
+    in order to align it to zero energy loss.
+    
+    scan_time = 10 - Time (in minutes) collecting each scan. This is important
+    for the polinomial correction time calculation.
+    
+    pol_corr = [] - Polinomial correction for the background. This is needed
+    whenever the CDD warms up since the background keeps changing over an 
+    extended period.
     """
     plt.figure()  
     
-    for i in range (len(epoints[:])):
+    #Images are processed according to their incident energy
+    for i in range (len(epoints)):
+        
+        print 'Started energy %0.1lf eV...' %(epoints[i])
+        #t0 = datetime.now()
         
         fname_list = []
         fname_list_BG = []
         time_BG = []
+        #Find all images with same incident energy and their backgrounds
         for j in range (len(setup[:,0])):
             if setup[j,3] == 1.0 and np.abs(setup[j,0] - epoints[i]) < 0.005:
                 fname_list.append(fname[j])
                 fname_list_BG.append(fname[int(setup[j,2])])
-                time_BG.append(scan_time*(setup[j,1]-1))
-            
+                time_BG.append(scan_time*j)
+        
+        print 'Processing %d scans...' %(len(fname_list))
+        
         ims = CCD(fname_list, photon_E=epoints[i], poly_order=2, binpix=2,
                   fname_list_BG = fname_list_BG, exclude=lim)
-
+                  
         if len(curvature[:]) == 3:
             ims.curvature = curvature
-                  
-        ims.clean(clean) #ims.clean_std(clean) ???? 
+                 
+       # t0_clean =  datetime.now()
+        if len(clean) != 0:
+            ims.clean_std_new(clean) # This process is taking ~ 0.3 sec/scan!
+        else:
+            ims.clean_std(clean[0])
+        #tf_clean = datetime.now()
         
+        """
+        If pol_corr will be done, it renormalize the background images based on 
+        the integrated background.
+        """
         if len(pol_corr) != 0:        
             ims.get_specs()
     
@@ -396,21 +476,23 @@ def process_setup(setup, fname, epoints = [], offset = 100, save_files = True,
                 sum_bkg = 0
                 for j in range (len(spec[1][:])):
                     sum_bkg = sum_bkg + spec[1][j]
-                pol = pol_corr[0] + pol_corr[1]*time_BG[w] + pol_corr[2]*time_BG[w]**2
-                #print pol, sum_bkg
+                pol = 0
+                for j in range (len(pol_corr)):
+                    pol = pol_corr[j]*time_BG[w]**(len(pol_corr)-j-1) + pol
+                #print pol/sum_bkg
                 ims.BGimages[w] = ims.BGimages[w]*pol/sum_bkg
                 w = w + 1
-            
+                
         ims.sub_backgrounds()
         ims.get_specs()
+        cal[0] = ims.shift_e(func = cal_func)
         ims.sum_specs()
         
         if len(cal[:]) == 2:
             ims.calibrate(cal[0],cal[1])
             
         if dx <= 0.0:
-            dx = ims.spectrum[0][0]-ims.spectrum[0][1]
-        ims.bin_points(dx, statistic = statistic)
+            ims.bin_points(dx, statistic = statistic)
         
         if len(to_plot[:]) == 0:
             if plot == 0:
@@ -434,25 +516,22 @@ def process_setup(setup, fname, epoints = [], offset = 100, save_files = True,
             ims.fileout = fileout
             ims.write_file()
             print 'saved file: ' + fileout
-            
-           
-            
-def fit_pol(x,p,mode='eval'):
-   if mode == 'eval':
-      out = p[0] + p[1]*x + p[2]*x**2
-   elif mode == 'params':
-      out = ['offset','first order', 'second order']
-   elif mode == 'name':
-      out = "Exponential"
-   elif mode == 'guess':
-      g = peakguess(x, p)
-      out = g[4:6]
-   else:
-      out = []
-   return out
+        
+        
+        #tf =  datetime.now()
+
+        #print 'Clean_std_new time = ', tf_clean - t0_clean
+        #print 'Total time = ', tf-t0
+        print 'Done!'
 
 def calc_bkg_corr(setup,fname, scan_time = 10, lim = [1,9999], clean = 1E5,
-                  curvature = []):
+                  curvature = [], order = 0):
+                      
+    """
+    Calculates the necessary background correction based on the integrated 
+    intensity of the background scans over time. It fits a "order" polynomial
+    to the integrated background x time, and retuns it as a p[len(order)] vector.
+    """
 
     sum_bkg = []
     time = []
@@ -470,7 +549,7 @@ def calc_bkg_corr(setup,fname, scan_time = 10, lim = [1,9999], clean = 1E5,
             if len(curvature[:]) == 3:
                 ims.curvature = curvature
             
-            ims.clean(clean)
+            ims.clean_std_new(clean)
             
             ims.get_specs()
             ims.sum_specs()
@@ -481,33 +560,19 @@ def calc_bkg_corr(setup,fname, scan_time = 10, lim = [1,9999], clean = 1E5,
                 sum_bkg[j] = sum_bkg[j] + ims.spectrum[1][w]
                 
             j = j + 1
-
-
-    err = []
-    err[:] = np.sqrt(sum_bkg[:])
-
-    M = np.zeros((len(time),3))
     
-    M[:,0] = time[:]
-    M[:,1] = sum_bkg[:]
-    M[:,2] = err[:]    
-
-    funcs = [fit_pol]
+    p = np.polyfit(time,sum_bkg,order)    
     
-    p0 = sum_bkg[0]
-    p1 = (sum_bkg[len(sum_bkg)-1] - sum_bkg[0])/(time[len(time)-1]-time[0])
-    p2 = -p1
+    xnew = np.linspace(time[0], time[len(time)-1], 100)
+    ynew = []
+    for i in range (len(xnew)):
+        y = 0
+        for j in range (len(p)):
+            y = p[j]*xnew[i]**(len(p)-j-1) + y
+        ynew.append(y)
     
-    guess = array([p0,p1,p2])
-    
-    f = fit.fit(x= M[:,0], y=M[:,1], e = M[:,2], funcs=funcs, guess=guess, ifix= [0,0,0])  
-    f.go()
-    clf()
-    errorbar(f.datax, f.datay, f.datae, fmt='k.')
-    fx,fy = f.evalfitfunc(nxpts = 200)
-    plt.plot(fx, fy, 'r-')       
-    
-    plt.plot(M[:,0],M[:,1], 'bs')
+    plt.plot(time,sum_bkg, 'bs')
+    plt.plot(xnew,ynew)
     plt.xlabel('Time')
     plt.ylabel('Bkg')
     time_lim = 0.1*np.abs(time[len(time)-1]-time[0])
@@ -515,7 +580,7 @@ def calc_bkg_corr(setup,fname, scan_time = 10, lim = [1,9999], clean = 1E5,
     plt.xlim(time[0]-time_lim,time[len(time)-1]+time_lim)
     plt.ylim(np.min(sum_bkg) - bkg_lim, np.max(sum_bkg) + bkg_lim)
 
-    return f.result          
+    return p      
         
         
         
